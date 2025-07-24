@@ -1,7 +1,13 @@
-# wrangler.toml
-name = "my-rss-generator" # 你的 Worker 名称，可以修改
-main = "index.js"         # 关键：指定入口文件是 index.js
-compatibility_date = "2023-10-25" # 使用一个较新的兼容日期
+name = "my-rss-generator"
+main = "index.js"
+compatibility_date = "2023-10-25"
+
+# 启用 Node.js 兼容性标志以支持 cheerio 等库
+compatibility_flags = [ "nodejs_compat" ]
 
 [build]
 command = "echo 'No build step required for this worker'"
+
+# 如果你有环境变量，可以在这里定义
+# [vars]
+# MY_VAR = "my-value"
