@@ -253,4 +253,3 @@ js.document.rss_result = result_str
             });
         },
     };
-}
