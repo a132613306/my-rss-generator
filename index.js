@@ -2,7 +2,6 @@
 /**
  * Universal RSS Generator for Cloudflare Workers using Pyodide
  */
-
 export default {
     async fetch(request, env, ctx) {
         // --- 1. Pyodide CDN URL ---
@@ -37,9 +36,10 @@ export default {
                 outputDiv.innerText = 'Installing Python dependencies (this may take a moment)...';
                 
                 // --- 安装 Python 依赖 ---
+                // 修正：移除 feedgen 的版本号，避免找不到纯 Python wheel 的错误
                 await pyodide.loadPackage("micropip");
                 const micropip = pyodide.pyimport("micropip");
-                await micropip.install(['beautifulsoup4==4.12.2', 'feedgen==0.9.0']);
+                await micropip.install(['beautifulsoup4==4.12.2', 'feedgen']); // <-- 修改在这里
 
                 outputDiv.innerText = 'Dependencies installed. Preparing to scrape...';
 
