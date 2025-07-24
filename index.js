@@ -1,6 +1,7 @@
 // index.js
 /**
  * Universal RSS Generator for Cloudflare Workers using Pyodide
+ * Optimized for specific torrent site structure
  */
 export default {
     async fetch(request, env, ctx) {
@@ -36,9 +37,11 @@ export default {
                 outputDiv.innerText = 'Installing Python dependencies (this may take a moment)...';
                 
                 // --- 安装 Python 依赖 ---
+                // 修正：移除 feedgen 的版本号，避免找不到纯 Python wheel 的错误
                 await pyodide.loadPackage("micropip");
                 const micropip = pyodide.pyimport("micropip");
                 await micropip.install(['beautifulsoup4', 'feedgen']);
+
                 outputDiv.innerText = 'Dependencies installed. Preparing to scrape...';
 
                 // --- 获取查询参数 ---
@@ -61,38 +64,21 @@ from pyodide.http import pyfetch
 from urllib.parse import urljoin, urlparse
 from datetime import datetime, timezone
 import micropip
+from js import document # 显式导入 js.document
 # Packages are installed above
 
 # Setup logging
-logging.basicConfig(level=logging.WARNING) # Reduce noise
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Default config
-DEFAULT_CONFIG = {
-    'title_selector': 'h1, h2, h3, .title, .post-title',
-    'link_selector': 'a[href]',
-    'description_selector': 'p, .excerpt, .summary',
-    'container_selector': '.post, .article, .entry, main .content'
-}
-
-def is_valid_url(url):
-    try:
-        result = urlparse(url)
-        return all([result.scheme, result.netloc])
-    except:
-        return False
-
-async def scrape_and_generate_rss(url, max_items=20, config=DEFAULT_CONFIG):
-    if not is_valid_url(url):
-        logger.error(f"Invalid URL provided: {url}")
-        from feedgen.feed import FeedGenerator
-        error_fg = FeedGenerator()
-        error_fg.id("invalid_url")
-        error_fg.title("Invalid URL")
-        error_fg.description(f"The provided URL '{url}' is not valid.")
-        error_fg.link(href=url, rel='alternate')
-        return error_fg.rss_str(pretty=True).decode('utf-8')
-
+async def scrape_and_generate_rss(url, max_items=20):
+    """
+    针对特定网站结构抓取数据并生成 RSS。
+    目标结构: 每个资源在一个 <tr> 标签内。
+    - 名称: <tr> 内第二个 <td> 中的 <a> 标签文本。
+    - 磁力链接: <tr> 内包含 magnet: 链接的 <a> 标签的 href。
+    - 时间: <tr> 内第四个 <td> (class="text-center") 的文本。
+    """
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
@@ -119,67 +105,112 @@ async def scrape_and_generate_rss(url, max_items=20, config=DEFAULT_CONFIG):
         fg.description(feed_description)
 
         items_added = 0
-        potential_items = []
+        
+        # --- 针对性抓取逻辑 ---
+        # 假设每个资源条目都在一个 <tr> 标签中
+        rows = soup.select('tr')
+        logger.info(f"Found {len(rows)} table rows.")
 
-        container_selector = config.get('container_selector')
-        if container_selector:
-            containers = soup.select(container_selector)
-            logger.info(f"Found {len(containers)} containers using selector '{container_selector}'")
-            for container in containers[:int(max_items) * 2]:
-                links_in_container = container.select(config['link_selector'])
-                for link_tag in links_in_container:
-                    potential_items.append((link_tag, container))
-        else:
-            all_links = soup.select(config['link_selector'])
-            logger.info(f"Found {len(all_links)} links using selector '{config['link_selector']}'")
-            for link_tag in all_links:
-                parent = link_tag.find_parent()
-                potential_items.append((link_tag, parent if parent else link_tag))
-
-        logger.info(f"Processing {len(potential_items)} potential items...")
-
-        for link_tag, context_element in potential_items:
+        for row in rows:
             if items_added >= int(max_items):
                 break
 
-            link_href = link_tag.get('href')
-            if not link_href:
+            # 1. 提取磁力链接 (优先查找)
+            magnet_link_tag = row.select_one('a[href^="magnet:?xt=urn:btih:"]')
+            if not magnet_link_tag:
+                logger.debug("Skipping row: No magnet link found.")
                 continue
+            
+            magnet_href = magnet_link_tag.get('href')
+            full_magnet_link = urljoin(url, magnet_href)
 
-            full_link = urljoin(url, link_href)
-
-            if not is_valid_url(full_link):
-                logger.debug(f"Skipping invalid generated link: {full_link}")
-                continue
-
+            # 2. 提取名称 (在磁力链接同级或附近查找名称链接)
+            # 策略：查找同一行内其他 <a> 标签，排除磁力链接和下载链接
+            all_links_in_row = row.select('a[href]')
             item_title = ""
-            item_title = link_tag.get('title') or link_tag.get_text(strip=True)
-
-            if not item_title or len(item_title) < 3:
-                title_tag = context_element.select_one(config['title_selector']) if context_element != link_tag else None
-                if title_tag and title_tag != link_tag:
-                    item_title = title_tag.get_text(strip=True)
-
+            title_link_href = ""
+            for link in all_links_in_row:
+                href = link.get('href', '')
+                # 排除磁力链接和 .torrent 下载链接
+                if href.startswith('magnet:?xt=urn:btih:') or href.endswith('.torrent'):
+                    continue
+                # 假设第一个非磁力/非torrent链接是名称链接
+                item_title = link.get_text(strip=True)
+                title_link_href = href
+                break
+            
+            # 如果没找到名称链接，尝试从其他 td 中获取文本
             if not item_title:
-                logger.debug(f"Skipping item, no title found for link: {full_link}")
+                 # 查找第二个 td (根据截图结构推测)
+                 tds = row.select('td')
+                 if len(tds) >= 2:
+                     # 尝试从第二个 td 中的链接获取标题
+                     title_link_in_td = tds[1].select_one('a')
+                     if title_link_in_td:
+                         item_title = title_link_in_td.get_text(strip=True)
+                         title_link_href = title_link_in_td.get('href', '')
+                     else:
+                         # 如果第二个 td 没有链接，直接取其文本
+                         item_title = tds[1].get_text(strip=True)
+            
+            # 如果还是没有标题，则跳过
+            if not item_title:
+                logger.debug("Skipping row: No title found.")
                 continue
 
-            item_description = ""
-            desc_tag = context_element.select_one(config['description_selector']) if context_element != link_tag else None
-            if desc_tag:
-                item_description = desc_tag.get_text(strip=True)[:300]
+            # 构建标题链接的完整 URL (如果有的话)
+            full_title_link = urljoin(url, title_link_href) if title_link_href else full_magnet_link
+
+            # 3. 提取时间 (查找第四个 class="text-center" 的 td)
+            time_text = ""
+            time_tds = row.select('td.text-center')
+            if len(time_tds) >= 4: # 确保有足够的 .text-center td
+                # 通常第四个是时间 (索引 3)
+                time_text = time_tds[3].get_text(strip=True) 
+            
+            # 如果没找到第四个，尝试找第三个
+            if not time_text and len(time_tds) >= 3:
+                 time_text = time_tds[2].get_text(strip=True)
+
+            logger.debug(f"Found item: Title='{item_title}', Magnet='{full_magnet_link}', Time='{time_text}'")
+
+            # --- 构造 RSS 条目描述 ---
+            description_parts = []
+            if time_text:
+                description_parts.append(f"<b>Time:</b> {time_text}")
+            # description_parts.append(f"<b>Magnet:</b> <a href=\\"{full_magnet_link}\\">{full_magnet_link}</a>")
+            # 为了简洁，描述中可以只放时间，链接放在条目本身
+            item_description = "<br/>".join(description_parts) if description_parts else "No description available."
 
             try:
                 fe = fg.add_entry()
-                fe.id(full_link)
+                fe.id(full_magnet_link) # 使用磁力链接作为唯一 ID
                 fe.title(item_title)
-                fe.link(href=full_link)
+                fe.link(href=full_magnet_link, rel='alternate') # 主链接设为磁力链接
+                # 可以添加一个指向网页的链接
+                # fe.link(href=full_title_link, rel='related') 
                 fe.description(item_description)
-                fe.pubDate(datetime.now(timezone.utc))
+                
+                # --- 尝试解析时间并设置发布日期 ---
+                if time_text:
+                    # 假设时间格式是 'YYYY-MM-DD HH:MM:SS'
+                    try:
+                        pub_date = datetime.strptime(time_text, '%Y-%m-%d %H:%M:%S')
+                        # PyRSS2Gen/Feedgen 通常期望 timezone-aware datetime
+                        # 如果解析出的 datetime 是 naive 的，需要添加 timezone
+                        if pub_date.tzinfo is None:
+                            pub_date = pub_date.replace(tzinfo=timezone.utc)
+                        fe.pubDate(pub_date)
+                    except ValueError:
+                        logger.warning(f"Could not parse date string: {time_text}. Using current time.")
+                        fe.pubDate(datetime.now(timezone.utc))
+                else:
+                     fe.pubDate(datetime.now(timezone.utc))
+
                 items_added += 1
-                logger.debug(f"Added item: {item_title} -> {full_link}")
+                logger.info(f"Added item {items_added}: {item_title}")
             except Exception as e:
-                logger.warning(f"Failed to add item for link {full_link}: {e}")
+                logger.error(f"Failed to add item '{item_title}': {e}")
 
         logger.info(f"Successfully scraped and added {items_added} items to RSS.")
         return fg.rss_str(pretty=True).decode('utf-8')
@@ -191,15 +222,20 @@ async def scrape_and_generate_rss(url, max_items=20, config=DEFAULT_CONFIG):
         error_fg.id(url)
         error_fg.title("Processing Error")
         error_fg.description(f"An error occurred processing {url}: {str(e)}")
+        # 修正：添加必需的 link 字段
         error_fg.link(href=url, rel='alternate')
         return error_fg.rss_str(pretty=True).decode('utf-8')
 
 # --- Main Execution ---
 import asyncio
-result = asyncio.ensure_future(scrape_and_generate_rss('\${target_url}', \${max_items}))
-result_str = await result
+target_url = '\${target_url}'
+max_items = \${max_items}
+
+logger.info(f"Starting scrape for URL: {target_url} with max_items: {max_items}")
+result_str = await scrape_and_generate_rss(target_url, max_items)
+logger.info("Scraping finished.")
 # 将结果写入一个全局变量，供 JS 读取
-js.document.rss_result = result_str
+document.rss_result = result_str # 使用显式导入的 document
 \`;
 
 
@@ -207,7 +243,8 @@ js.document.rss_result = result_str
                 await pyodide.runPythonAsync(pythonCode);
                 
                 // --- 获取结果并显示 ---
-                const rssResult = js.document.rss_result; // 从 Python 设置的全局变量获取
+                // 使用显式导入的 document
+                const rssResult = document.rss_result;
                 if (rssResult) {
                     if (rssResult.startsWith("<?xml") || rssResult.includes("<rss")) {
                         // 如果结果看起来像 RSS XML
@@ -253,3 +290,5 @@ js.document.rss_result = result_str
             });
         },
     };
+}
+// <-- 文件在此处正确结束，没有多余的字符或括号
