@@ -1,7 +1,7 @@
-name = "helloworld"
-type = "javascript"
+# wrangler.toml
+name = "my-rss-generator" # 你的 Worker 名称，可以修改
+main = "index.js"         # 关键：指定入口文件是 index.js
+compatibility_date = "2023-10-25" # 使用一个较新的兼容日期
 
-account_id = ""
-workers_dev = true
-route = ""
-zone_id = ""
+[build]
+command = "echo 'No build step required for this worker'"
