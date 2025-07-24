@@ -290,5 +290,3 @@ document.rss_result = result_str # 使用显式导入的 document
             });
         },
     };
-}
-// <-- 文件在此处正确结束，没有多余的字符或括号
