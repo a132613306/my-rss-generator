@@ -1,8 +1,9 @@
 name = "my-rss-generator"
 main = "index.js"
-compatibility_date = "2023-10-25"
+# 更新 compatibility_date 以解决 string_decoder 问题
+compatibility_date = "2024-09-23"
 
-# 启用 Node.js 兼容性标志以支持 cheerio 等库
+# 确保 Node.js 兼容性标志已设置，以支持 cheerio
 compatibility_flags = [ "nodejs_compat" ]
 
 [build]
