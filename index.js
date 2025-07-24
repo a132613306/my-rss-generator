@@ -36,11 +36,9 @@ export default {
                 outputDiv.innerText = 'Installing Python dependencies (this may take a moment)...';
                 
                 // --- 安装 Python 依赖 ---
-                // 修正：移除 feedgen 的版本号，避免找不到纯 Python wheel 的错误
                 await pyodide.loadPackage("micropip");
                 const micropip = pyodide.pyimport("micropip");
-                await micropip.install(['beautifulsoup4==4.12.2', 'feedgen']); // <-- 修改在这里
-
+                await micropip.install(['beautifulsoup4', 'feedgen']);
                 outputDiv.innerText = 'Dependencies installed. Preparing to scrape...';
 
                 // --- 获取查询参数 ---
@@ -92,6 +90,7 @@ async def scrape_and_generate_rss(url, max_items=20, config=DEFAULT_CONFIG):
         error_fg.id("invalid_url")
         error_fg.title("Invalid URL")
         error_fg.description(f"The provided URL '{url}' is not valid.")
+        error_fg.link(href=url, rel='alternate')
         return error_fg.rss_str(pretty=True).decode('utf-8')
 
     try:
@@ -192,6 +191,7 @@ async def scrape_and_generate_rss(url, max_items=20, config=DEFAULT_CONFIG):
         error_fg.id(url)
         error_fg.title("Processing Error")
         error_fg.description(f"An error occurred processing {url}: {str(e)}")
+        error_fg.link(href=url, rel='alternate')
         return error_fg.rss_str(pretty=True).decode('utf-8')
 
 # --- Main Execution ---
